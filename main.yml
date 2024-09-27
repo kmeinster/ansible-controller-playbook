@@ -1,0 +1,96 @@
+---
+- name: AAP Controller Playbook
+  hosts: localhost
+  gather_facts: false
+  vars:
+    aap_api_url: "https://your-aap-instance.com/api/v2"
+    aap_token: "{{ lookup('env', 'AAP_API_TOKEN') }}"
+    servicenow_api_url: "https://your-instance.service-now.com/api/endpoint"
+    playbook1_template_id: 1
+    playbook2_template_id: 2
+    
+  tasks:
+    - name: Launch Playbook 1
+      uri:
+        url: "{{ aap_api_url }}/job_templates/{{ playbook1_template_id }}/launch/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        body_format: json
+        body:
+          extra_vars:
+            action: "{{ action }}"
+            type: "{{ type }}"
+            ip_list: "{{ ip_list }}"
+        status_code: 201
+      register: playbook1_job
+
+    - name: Monitor Playbook 1
+      uri:
+        url: "{{ aap_api_url }}/jobs/{{ playbook1_job.json.job }}/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        return_content: yes
+      register: job1_status
+      until: job1_status.json.status not in ['pending', 'waiting', 'running']
+      retries: 60
+      delay: 30
+
+    - name: Call ServiceNow API with Playbook 1 result
+      uri:
+        url: "{{ servicenow_api_url }}"
+        method: POST
+        body_format: json
+        body:
+          status: "{{ job1_status.json.status }}"
+          playbook: "Playbook 1"
+
+    - name: Launch Playbook 2 if Playbook 1 was successful
+      uri:
+        url: "{{ aap_api_url }}/job_templates/{{ playbook2_template_id }}/launch/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        body_format: json
+        body:
+          extra_vars:
+            execute: "{{ execute }}"
+            edge_firewalls: "{{ edge_firewalls }}"
+            core_firewalls: "{{ core_firewalls }}"
+        status_code: 201
+      register: playbook2_job
+      when: job1_status.json.status == 'successful'
+
+    - name: Monitor Playbook 2
+      uri:
+        url: "{{ aap_api_url }}/jobs/{{ playbook2_job.json.job }}/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        return_content: yes
+      register: job2_status
+      until: job2_status.json.status not in ['pending', 'waiting', 'running']
+      retries: 60
+      delay: 30
+      when: job1_status.json.status == 'successful'
+
+    - name: Call ServiceNow API with Playbook 2 result
+      uri:
+        url: "{{ servicenow_api_url }}"
+        method: POST
+        body_format: json
+        body:
+          status: "{{ job2_status.json.status }}"
+          playbook: "Playbook 2"
+      when: job1_status.json.status == 'successful'
+
+    - name: Final status report
+      debug:
+        msg: >
+          Playbook 1 status: {{ job1_status.json.status }}.
+          {% if job1_status.json.status == 'successful' %}
+          Playbook 2 status: {{ job2_status.json.status }}.
+          {% else %}
+          Playbook 2 was not executed due to Playbook 1 failure.
+          {% endif %}
